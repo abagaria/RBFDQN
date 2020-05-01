@@ -1,5 +1,6 @@
 import numpy
 import os
+import pickle
 
 
 def action_checker(env):
@@ -65,3 +66,20 @@ def set_random_seed(meta_params):
     #meta_params['env'].action_space.seed(seed_number)
     meta_params['env'].reset()
     #print("set the random seed to be able to reproduce the result ...")
+
+
+def save_scores(scores, experiment_name, seed):
+    filename = os.path.join(experiment_name, "scores", "seed_" + str(seed) + "_scores.pkl")
+    with open(filename, "wb+") as f:
+        pickle.dump(scores, f)
+
+def create_log_dir(experiment_name):
+    path = os.path.join(os.getcwd(), experiment_name)
+    try:
+        os.mkdir(path)
+    except OSError:
+        print("Creation of the directory %s failed" % path)
+    else:
+        print("Successfully created the directory %s " % path)
+    return path
+
