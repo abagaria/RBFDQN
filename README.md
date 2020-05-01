@@ -1,3 +1,4 @@
+<p class="has-line-data" data-line-start="2" data-line-end="3">Sam Addendum: it's a package now. Do "pip install -e ." from the root directory and then you can run things as below. </p>
 <h1 class="code-line" data-line-start=0 data-line-end=1 ><a id="Instructions_0"></a>Instructions:</h1>
 <p class="has-line-data" data-line-start="2" data-line-end="3">Below, I explain steps necessary for running RBFDQN. Note that I assume you are on OSX, but you basically need to follow similar steps on other platforms. </p>
 
