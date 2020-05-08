@@ -14,6 +14,11 @@ import argparse
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 from tensorflow.python.util import deprecation
 deprecation._PRINT_DEPRECATION_WARNINGS = False
+from thundersvm import OneClassSVM
+import numpy as np
+import ipdb
+from novelty_classifier import NoveltyDetectionClassifier
+
 
 class Q_class:
 
@@ -24,7 +29,8 @@ class Q_class:
 		self.network,self.qRef_li=self.create_network()
 		self.target_network,self.target_qRef_li=self.create_network()
 		self.target_network.set_weights(self.network.get_weights())
-		self.buffer_object=buffer_class.buffer_class(max_length=self.params['max_buffer_size'])
+		self.buffer_object=buffer_class.buffer_class(max_length=self.params['max_buffer_size'], state_size=state_size, action_size=action_size)
+		self.one_class_classifier = None
 
 	def func_L2(self,tensors):
 		return -K.sqrt(K.sum(K.square(tensors[0]-tensors[1]),
@@ -96,6 +102,26 @@ class Q_class:
 			a = aRef_li[0,aRef_begin:aRef_end]
 			return a.tolist()
 
+	def get_q_value_target(self, rewards, dones, s_prime, q_prime, q_max):
+		gamma = self.params["gamma"]
+		if self.one_class_classifier is None:
+			target = rewards + (gamma * (1 - dones) * q_prime)
+		elif isinstance(self.one_class_classifier, OneClassSVM):
+			novelty_predictions = self.one_class_classifier.predict(s_prime)
+			novel_idx = np.where(novelty_predictions != 1)[0]
+			q_prime[novel_idx, :] = args.qmax
+			target = rewards + (gamma * (1 - dones) * q_prime)
+		elif isinstance(self.one_class_classifier, NoveltyDetectionClassifier):
+			known_probabilities = self.one_class_classifier.predict(s_prime)
+			# known_probabilities = np.clip(known_probabilities, a_min=0., a_max=0.5)  # TODO: Trying clipping the intrinsic rewards
+			known_target = rewards + (gamma * (1 - dones) * q_prime)
+			known_target = known_probabilities * known_target.squeeze()
+			unknown_target = (1. - known_probabilities) * q_max
+			target = known_target + unknown_target
+		else:
+			raise NotImplementedError(self.one_class_classifier)
+		return target
+
 	def update(self):
 		'''
 		1-samples a bunch of tuples from the buffer
@@ -108,22 +134,15 @@ class Q_class:
 			return
 		else:
 			pass
-		batch=random.sample(self.buffer_object.storage,params['batch_size'])
-		s_li=[b['s'] for b in batch]
-		sp_li=[b['sp'] for b in batch]
-		r_li=[b['r'] for b in batch]
-		done_li=[b['done'] for b in batch]
-		a_li=[b['a'] for b in batch]
-		s_matrix=numpy.array(s_li).reshape(params['batch_size'],self.state_size)
-		a_matrix=numpy.array(a_li).reshape(params['batch_size'],self.action_size)
-		r_matrix=numpy.array(r_li).reshape(params['batch_size'],1)
-		r_matrix=numpy.clip(r_matrix,a_min=-self.params['reward_clip'],a_max=self.params['reward_clip'])
-		sp_matrix=numpy.array(sp_li).reshape(params['batch_size'],self.state_size)
-		done_matrix=numpy.array(done_li).reshape(params['batch_size'],1)
+
+		s_matrix, a_matrix, r_matrix, sp_matrix, done_matrix = self.buffer_object.sample(batch_size=params["batch_size"],
+																						 reward_clip=params["reward_clip"])
 
 		next_aRef_li,next_qRef_li=self.target_qRef_li.predict(sp_matrix)
 		next_qRef_star_matrix=numpy.max(next_qRef_li,axis=1,keepdims=True)
-		label=r_matrix+self.params['gamma']*(1-done_matrix)*next_qRef_star_matrix
+
+		# label=r_matrix+self.params['gamma']*(1-done_matrix)*next_qRef_star_matrix
+		label = self.get_q_value_target(r_matrix, done_matrix, sp_matrix, next_qRef_star_matrix, q_max=args.qmax)
 		self.network.fit(x=[s_matrix,a_matrix],
 						y=label,
 						epochs=self.params['updates_per_batch'],
@@ -144,12 +163,33 @@ class Q_class:
 			new_target_weights.append(temp)
 		self.target_network.set_weights(new_target_weights)
 
+	def train_novelty_detector(self, visited_states, episode):
+		self.one_class_classifier = NoveltyDetectionClassifier(nu_high=0.5, nu_low=0.01, nu_resolution=0.05)
+		self.one_class_classifier.fit(visited_states)
+		plot_name_prefix = f"{args.env}_ocsvm_"
+
+		utils.plot_one_class_classifier(visited_states, self.one_class_classifier, episode, plot_name_prefix)
+
+	@staticmethod
+	def get_nu(current_episode, max_episode):
+		nu_initial = 0.2
+		nu_final = 0.
+		m = (nu_final - nu_initial) / max_episode
+		nu = (m * current_episode) + nu_initial
+		return nu
+
+
 if __name__=='__main__':
 
 	parser = argparse.ArgumentParser()
 	parser.add_argument("--env", default="LunarLanderContinuous-v2")# OpenAI gym environment name
 	parser.add_argument("--seed", default=0, type=int)              # Sets Gym, PyTorch and Numpy seeds
+	parser.add_argument("--sparse", action="store_true", default=False)
+	parser.add_argument("--qmax", type=float, default=10.)
+	parser.add_argument("--use_ocsvm", action="store_true", default=False)
+	parser.add_argument("--max_steps", default="")
 	args = parser.parse_args()
+
 	env_dic = {}
 	env_dic['Pendulum-v0']=0
 	env_dic['LunarLanderContinuous-v2']=10
@@ -159,7 +199,9 @@ if __name__=='__main__':
 	env_dic['Hopper-v1']=50
 	env_dic['InvertedDoublePendulum-v1']=60
 	env_dic['InvertedPendulum-v1']=70
-	env_dic['Reacher-v1']=80
+	env_dic['Reacher-v2']=80
+	env_dic['MountainCarContinuous-v0'] = 90
+	env_dic["PointReacher"] = 100
 	if args.env not in env_dic.keys():
 		print("environment not recognized ... use one of the following environments")
 		print(env_dic.keys())
@@ -168,7 +210,13 @@ if __name__=='__main__':
 	alg='rbf'
 	params=utils.get_hyper_parameters(hyper_parameter_name,alg)
 	params['hyper_parameters_name']=hyper_parameter_name
-	env=gym.make(params['env_name'])
+
+	if params["env_name"] == "PointReacher":
+		from tasks.point_maze.point_reacher import create_point_reacher_env
+		env = create_point_reacher_env()
+	else:
+		env=gym.make(params['env_name'])
+
 	params['env']=env
 	params['seed_number']=args.seed
 	utils.set_random_seed(params)
@@ -176,26 +224,53 @@ if __name__=='__main__':
 	utils.action_checker(env)
 	Q_object=Q_class(params,env,state_size=len(s0),action_size=len(env.action_space.low))
 	G_li=[]
+
+	visited_states = []
+	max_steps = int(args.max_steps) if args.max_steps != "" else np.inf
+
 	for episode in range(params['max_episode']):
 		#train policy with exploration
 		s,done=env.reset(),False
-		while done==False:
+		step_number = 0
+		while done==False and step_number < max_steps:
+			visited_states.append(s)
 			a=Q_object.e_greedy_policy(s,episode+1,'train')
-			sp,r,done,_=env.step(numpy.array(a))
-			Q_object.buffer_object.append(s,a,r,done,sp)
+			sp,r,done,info=env.step(numpy.array(a))
+
+			if args.sparse:
+				time_limit_truncated = info.get('TimeLimit.truncated', False)
+				is_terminal = done and not time_limit_truncated
+				r = +100. if is_terminal and r >= 0. else 0.
+
+				if args.env == "Reacher-v2":
+					r = 100. if abs(info["reward_dist"]) <= 0.02 else 0.
+					is_terminal = r == 100.  # TODO: What about the done signal?
+
+				Q_object.buffer_object.append(s,a,r,is_terminal,sp)
+			else:
+				r = -np.linalg.norm(s[:2]-env.goal_xy)
+				Q_object.buffer_object.append(s, a, r, done, sp)
+
 			s=sp
+			step_number += 1
 
 		#now update the Q network
 		for i in trange(params['updates_per_episode'],file=sys.stdout, desc='training'):
 			Q_object.update()
+
+		if args.use_ocsvm:
+			Q_object.train_novelty_detector(np.array(visited_states), episode)
+
 		#test the learned policy, without performing any exploration
 		s,t,G,done=env.reset(),0,0,False
-		while done==False:
+		step_number = 0
+		while done==False and step_number < max_steps:
 			a=Q_object.e_greedy_policy(s,episode+1,'test')
 			sp,r,done,_=env.step(numpy.array(a))
-			if episode % 10 == 0:
-				env.render()
+			# if episode % 10 == 0:
+			# 	env.render()
 			s,t,G=sp,t+1,G+r
+			step_number += 1
 		print("in episode {} we collected return {} in {} timesteps".format(episode,G,t))
 		G_li.append(G)
 		if episode % 10 == 0 and episode>0:	
