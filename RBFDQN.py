@@ -100,7 +100,7 @@ class Q_class:
 			max_index = numpy.argmax(qRef_li)
 			aRef_begin,aRef_end = max_index*self.action_size,(max_index+1)*self.action_size
 			a = aRef_li[0,aRef_begin:aRef_end]
-			return a.tolist()
+			return np.clip(a.tolist(), -1, 1)
 
 	def get_q_value_target(self, rewards, dones, s_prime, q_prime, q_max):
 		gamma = self.params["gamma"]
@@ -199,9 +199,7 @@ if __name__=='__main__':
 	env_dic['Hopper-v1']=50
 	env_dic['InvertedDoublePendulum-v1']=60
 	env_dic['InvertedPendulum-v1']=70
-	env_dic['Reacher-v2']=80
 	env_dic['MountainCarContinuous-v0'] = 90
-	env_dic["PointReacher"] = 100
 	if args.env not in env_dic.keys():
 		print("environment not recognized ... use one of the following environments")
 		print(env_dic.keys())
@@ -210,13 +208,7 @@ if __name__=='__main__':
 	alg='rbf'
 	params=utils.get_hyper_parameters(hyper_parameter_name,alg)
 	params['hyper_parameters_name']=hyper_parameter_name
-
-	if params["env_name"] == "PointReacher":
-		from tasks.point_maze.point_reacher import create_point_reacher_env
-		env = create_point_reacher_env()
-	else:
-		env=gym.make(params['env_name'])
-
+	env=utils.create_env("pendulum", "swingup", args.seed, dmc=True)
 	params['env']=env
 	params['seed_number']=args.seed
 	utils.set_random_seed(params)
@@ -235,20 +227,19 @@ if __name__=='__main__':
 		while done==False and step_number < max_steps:
 			visited_states.append(s)
 			a=Q_object.e_greedy_policy(s,episode+1,'train')
-			sp,r,done,info=env.step(numpy.array(a))
+			sp,r,_,info=env.step(numpy.array(a))
+
+			# TODO: This is dmc specific
+			r *= 100.
+			done = r > 0
 
 			if args.sparse:
 				time_limit_truncated = info.get('TimeLimit.truncated', False)
 				is_terminal = done and not time_limit_truncated
-				r = +100. if is_terminal and r >= 0. else 0.
-
-				if args.env == "Reacher-v2":
-					r = 100. if abs(info["reward_dist"]) <= 0.02 else 0.
-					is_terminal = r == 100.  # TODO: What about the done signal?
+				r = +100. if is_terminal and r > 0. else 0.
 
 				Q_object.buffer_object.append(s,a,r,is_terminal,sp)
 			else:
-				r = -np.linalg.norm(s[:2]-env.goal_xy)
 				Q_object.buffer_object.append(s, a, r, done, sp)
 
 			s=sp
@@ -266,11 +257,12 @@ if __name__=='__main__':
 		step_number = 0
 		while done==False and step_number < max_steps:
 			a=Q_object.e_greedy_policy(s,episode+1,'test')
-			sp,r,done,_=env.step(numpy.array(a))
+			sp,r,_,_=env.step(numpy.array(a))
 			# if episode % 10 == 0:
 			# 	env.render()
 			s,t,G=sp,t+1,G+r
 			step_number += 1
+			done = r > 0
 		print("in episode {} we collected return {} in {} timesteps".format(episode,G,t))
 		G_li.append(G)
 		if episode % 10 == 0 and episode>0:	

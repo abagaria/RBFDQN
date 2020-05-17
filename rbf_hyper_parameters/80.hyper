@@ -1,5 +1,5 @@
-env_name,Reacher-v1,string
-max_episode,1000,integer
+env_name,Reacher-v2,string
+max_episode,250,integer
 num_layers,3,integer
 layer_size,512,integer
 learning_rate,0.00025,float
